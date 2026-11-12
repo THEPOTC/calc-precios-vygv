@@ -158,6 +158,7 @@ body.vend .only-mgr{display:none !important}
     <button class="btn" id="lAgregar" type="button" style="flex:0 0 auto">Agregar articulo</button>
     <button class="btn bad" id="lLimpiar" type="button" style="flex:0 0 auto">Limpiar lista</button>
     <button class="btn only-vend" id="lExportar" type="button" style="flex:0 0 auto">Exportar imagen</button>
+    <button class="btn sec only-vend" id="lExcel" type="button" style="flex:0 0 auto">Exportar Excel</button>
   </div>
   <div class="scroll"><table class="tbl" id="lTabla"></table></div>
   <div id="lTotales" class="card" style="margin-top:12px"></div>
@@ -736,6 +737,94 @@ $("#pExportar").onclick = () => {
   const it = getItem(CALC.sku); exportarOferta([{ it, r: calcular(it, categoriaActiva(), CALC.modo, CALC.valor), cant: parseNum($("#pCant").value) }]);
 };
 $("#lExportar").onclick = () => exportarOferta(LINES.map(L => getItem(L.sku) ? { it: getItem(L.sku), r: calcular(getItem(L.sku), categoriaActiva(), L.modo, L.valor), cant: L.cant } : null).filter(Boolean));
+
+/* ====================== EXPORTAR LISTA A EXCEL (vendedores) ====================== */
+const crcT = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = u => { let c = 0xFFFFFFFF; for (let i = 0; i < u.length; i++) c = crcT[(c ^ u[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+function zipAlmacenar(files) {
+  const enc = new TextEncoder(), parts = [], cen = []; let off = 0, d = new Date();
+  const dt = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), dd = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  files.forEach(([name, txt]) => {
+    const nb = enc.encode(name), data = enc.encode(txt), crc = crc32(data), lh = new DataView(new ArrayBuffer(30)), ch = new DataView(new ArrayBuffer(46));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(10, dt, true); lh.setUint16(12, dd, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, data.length, true); lh.setUint32(22, data.length, true); lh.setUint16(26, nb.length, true);
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(12, dt, true); ch.setUint16(14, dd, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, data.length, true); ch.setUint32(24, data.length, true); ch.setUint16(28, nb.length, true); ch.setUint32(42, off, true);
+    parts.push(new Uint8Array(lh.buffer), nb, data); cen.push(new Uint8Array(ch.buffer), nb); off += 30 + nb.length + data.length;
+  });
+  const cl = cen.reduce((a, b) => a + b.length, 0), end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cl, true); end.setUint32(16, off, true);
+  return new Blob([...parts, ...cen, new Uint8Array(end.buffer)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+const xlCol = n => { let s = ""; n++; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+const xe = t => String(t).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+// estilos: 1 negrita, 2 encabezado, 3 monto, 4 porcentaje, 5 monto total, 6 porcentaje total, 7 titulo rojo, 8 etiqueta total
+const T = (v, s) => ({ v, s }), N = (v, s) => ({ v, s }), Fm = (f, v, s) => ({ f, v, s });
+function hojaXml(rows, widths, proteger) {
+  let x = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>' +
+    widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("") + "</cols><sheetData>";
+  rows.forEach((r, ri) => {
+    x += `<row r="${ri + 1}">`;
+    r.forEach((c, ci) => {
+      if (c == null) return; const ref = xlCol(ci) + (ri + 1), st = c.s ? ` s="${c.s}"` : "";
+      if (c.f) x += `<c r="${ref}"${st}><f>${xe(c.f)}</f>${c.v == null || c.v === "" ? "" : `<v>${c.v}</v>`}</c>`;
+      else if (typeof c.v === "number") x += `<c r="${ref}"${st}><v>${c.v}</v></c>`;
+      else x += `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xe(c.v)}</t></is></c>`;
+    });
+    x += "</row>";
+  });
+  return x + "</sheetData>" + (proteger ? '<sheetProtection sheet="1" objects="1" scenarios="1"/>' : "") + "</worksheet>";
+}
+const ESTILOS = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+  '<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="0.00%"/></numFmts>' +
+  '<fonts count="4"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="13"/><color rgb="FFC00000"/><name val="Calibri"/></font></fonts>' +
+  '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF156082"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD6ECF8"/></patternFill></fill></fills>' +
+  '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+  '<cellXfs count="9"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+  '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+  '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+  '<xf numFmtId="164" fontId="1" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/><xf numFmtId="165" fontId="1" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>' +
+  '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs></styleSheet>';
+function libroXlsx(nombreHoja, rows, widths, proteger) {
+  return zipAlmacenar([
+    ["[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'],
+    ["_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ["xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="' + xe(nombreHoja) + '" sheetId="1" r:id="rId1"/></sheets><calcPr fullCalcOnLoad="1"/></workbook>'],
+    ["xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'],
+    ["xl/styles.xml", ESTILOS], ["xl/worksheets/sheet1.xml", hojaXml(rows, widths, proteger)]]);
+}
+
+// Mismo contenido y mismas reglas que "Exportar imagen": sin costos, con I.V.A., y no sale si algun descuento supera el maximo.
+function exportarOfertaExcel(pares) {
+  if (!esVend()) return;
+  const cli = clienteActual(); if (!cli) return toast("Elige un cliente primero");
+  if (!pares.length) return toast("No hay articulos para exportar");
+  const lineas = [];
+  for (const p of pares) {
+    if (!(p.r.precio > 0)) return toast("Falta un precio válido en " + p.it[0]);
+    if (!(p.cant > 0)) return toast("Falta la cantidad en " + p.it[0]);
+    if (p.r.desc != null && p.r.desc > p.it[3] + 1e-6) return toast(MSG_EXCESO_VEND);
+    const precio = rd(p.r.precio), x = lineaVend(precio, p.cant);
+    lineas.push({ cod: p.it[0], desc: p.it[1], precio, cant: p.cant, base: x.base, final: x.final });
+  }
+  const hoy = new Date(), hasta = validezHasta(hoy);
+  const rows = [[T("OFERTA DE PRECIOS", 1)], [T("Importaciones Industriales MASACA")], [],
+    [T("Cliente", 1), T(cli[3])], [T("Fecha del calculo", 1), T(fmtF(hoy))], [T("Validez de la oferta", 1), T("Hasta el " + fmtF(hasta) + " (" + DIAS_VALIDEZ + " dias naturales). Precios en colones.")], [],
+    ["Codigo", "Descripcion", "Precio unitario", "Cant", "Total sin I.V.A.", "I.V.A. 13%", "Final + I.V.A."].map(h => T(h, 2))];
+  const r0 = rows.length + 1;
+  lineas.forEach(l => { const r = rows.length + 1;
+    rows.push([T(l.cod), T(l.desc), N(l.precio, 3), N(l.cant), Fm(`ROUND(C${r}*D${r},2)`, l.base, 3), Fm(`G${r}-E${r}`, rd(l.final - l.base), 3), Fm(`ROUND(E${r}*1.13,2)`, l.final, 3)]); });
+  const r1 = rows.length, sb = rd(lineas.reduce((a, l) => a + l.base, 0)), sf = rd(lineas.reduce((a, l) => a + l.final, 0));
+  rows.push([null, null, null, T("Total", 8), Fm(`SUM(E${r0}:E${r1})`, sb, 5), Fm(`SUM(F${r0}:F${r1})`, rd(sf - sb), 5), Fm(`SUM(G${r0}:G${r1})`, sf, 5)]);
+  const blob = libroXlsx("Oferta", rows, [16, 56, 16, 9, 18, 16, 18], true);
+  const nom = "oferta_" + norm(cli[3]).replace(/[^a-z0-9]+/g, "_").slice(0, 30) + "_" + isoDate(hoy) + ".xlsx", file = new File([blob], nom, { type: blob.type });
+  (async () => {
+    try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Oferta de precios" }); return; } }
+    catch (e) { if (e && e.name === "AbortError") return; }
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = nom; a.click(); toast("Excel descargado");
+  })();
+}
+$("#lExcel").onclick = () => exportarOfertaExcel(LINES.map(L => getItem(L.sku) ? { it: getItem(L.sku), r: calcular(getItem(L.sku), categoriaActiva(), L.modo, L.valor), cant: L.cant } : null).filter(Boolean));
 
 /* ====================== CLIENTES ====================== */
 function renderClientes() {
