@@ -33,7 +33,7 @@ header h1{font-size:17px;margin:0 8px 0 0;font-weight:650;letter-spacing:.2px}
 header .sp{flex:1}
 header select{background:transparent;color:inherit;border:1px solid rgba(255,255,255,.35);border-radius:8px;min-height:40px;padding:0 8px}
 header select option{color:#16202c}
-nav{display:flex;gap:4px;padding:8px 12px 0;background:var(--bg);position:sticky;top:57px;z-index:15;overflow-x:auto}
+nav{display:flex;gap:4px;padding:8px 12px 0;background:var(--bg);position:sticky;top:var(--hh,57px);z-index:15;overflow-x:auto}
 nav button{border:0;background:transparent;padding:12px 18px;border-radius:10px 10px 0 0;color:var(--muted);cursor:pointer;
   font-weight:600;min-height:46px;white-space:nowrap}
 nav button[aria-selected=true]{background:var(--panel);color:var(--ink);box-shadow:0 -2px 0 var(--accent) inset}
@@ -77,6 +77,9 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
 .tbl .name{max-width:260px;white-space:normal}
 .tbl .name small{display:block;color:var(--muted)}
 .scroll{overflow-x:auto}
+/* Lista: la tabla se desplaza dentro de su caja y la fila de titulos (Articulo, P. lista...) queda fija arriba */
+.scroll.lst{overflow:auto;max-height:calc(100vh - var(--hh,57px) - var(--nh,60px) - 270px);max-height:calc(100dvh - var(--hh,57px) - var(--nh,60px) - 270px);min-height:230px}
+.scroll.lst .tbl thead th{position:sticky;top:0;z-index:3;background:var(--panel);box-shadow:0 1px 0 var(--line)}
 .over{color:var(--bad);font-weight:700}
 .overlay{position:fixed;inset:0;background:rgba(10,16,24,.62);z-index:50;display:none;align-items:flex-start;justify-content:center;padding:6vh 12px}
 .overlay.on{display:flex}
@@ -102,7 +105,7 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
 <div id="bnNuevo" class="msg warn" style="display:none;margin:8px 12px">Hay precios nuevos publicados. <button class="btn" id="bnAct" type="button" style="margin-left:8px">Actualizar ahora</button></div>
 <nav role="tablist">
   <button role="tab" data-tab="precio" aria-selected="true">Precio unitario</button>
-  <button role="tab" data-tab="lista" aria-selected="false">Lista (max 15)</button>
+  <button role="tab" data-tab="lista" aria-selected="false">Lista (max 50)</button>
   <button role="tab" data-tab="clientes" aria-selected="false">Clientes</button>
   <button role="tab" data-tab="datos" aria-selected="false">Datos</button>
 </nav>
@@ -149,7 +152,7 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
     <button class="btn" id="lExportar" type="button" style="flex:0 0 auto">Exportar imagen</button>
     <button class="btn sec" id="lExcel" type="button" style="flex:0 0 auto">Exportar Excel</button>
   </div>
-  <div class="scroll"><table class="tbl" id="lTabla"></table></div>
+  <div class="scroll lst"><table class="tbl" id="lTabla"></table></div>
   <div id="lTotales" class="card" style="margin-top:12px"></div>
 </section>
 
@@ -302,11 +305,12 @@ async function idbDel(k) { const db = await idb(); return new Promise((res, rej)
 // (IndexedDB "precios-vendedores" y claves "pv_"), distinto al de las apps de gerencia, aunque esten en el mismo sitio web.
 // item = [codigo, nombre, costo(siempre null aqui), descMax, stock(siempre null aqui), categoria, subcategoria, activo, AAA, A, B, C]
 // cliente = [vendedor, zona, codigo, nombre, categ, grupo]
-const VERSION_APP = "Vendedores 2.1";
+const VERSION_APP = "Vendedores 2.2";
 let DATA = null, BLOB = null, IDX = new Map(), SRCH = [];
 let CFG = Object.assign({ categoria: "AAA", cliente: "" }, lsGet("cfg", {}));
 let CALC = { sku: null, valor: 0 };
 let LINES = lsGet("lista", []).filter(L => L && L.sku).map(L => ({ sku: L.sku, cant: L.cant > 0 ? L.cant : 1, valor: L.valor }));
+const MAX_LINEAS = 50, POR_IMAGEN = 20;   // la imagen se parte en varias si hay mas de POR_IMAGEN lineas
 const saveCfg = () => lsSet("cfg", CFG), saveLines = () => lsSet("lista", LINES);
 
 // Solo se acepta un paquete de vendedores. Un paquete de gerencia (con costos) se rechaza y no se guarda.
@@ -328,6 +332,8 @@ function setData(d) {
   $("#cVend").innerHTML = '<option value="">Todos</option>' + vs.map(g => `<option>${esc(g)}</option>`).join("");
   renderAll(); revisarVigencia(); buscarNuevos();
 }
+const veces = sku => LINES.filter(L => L.sku === sku).length;
+const MSG_REPETIDO = "Aviso: este SKU ya estaba en la lista. Se agrego de todos modos.";
 const getItem = sku => IDX.get(String(sku || "").toLowerCase()) || null;
 function clienteActual() { return DATA && CFG.cliente ? DATA.clientes.find(c => c[2] === CFG.cliente) || null : null; }
 function categoriaActiva() {
@@ -432,17 +438,28 @@ $("#pDesc").addEventListener("input", e => {
 $("#pCant").addEventListener("input", () => recalcPrecio("all"));
 $("#pAgregar").onclick = () => {
   if (!CALC.sku) return toast("Elige un articulo primero");
-  if (LINES.length >= 15) return toast("La lista ya tiene 15 lineas");
+  if (LINES.length >= MAX_LINEAS) return toast("La lista ya tiene " + MAX_LINEAS + " lineas");
   const c = parseNum($("#pCant").value);
-  LINES.push({ sku: CALC.sku, cant: c > 0 ? c : 1, valor: CALC.valor }); saveLines(); renderLista(); toast("Agregado a la lista");
+  const rep = veces(CALC.sku) > 0;
+  LINES.push({ sku: CALC.sku, cant: c > 0 ? c : 1, valor: CALC.valor }); saveLines(); renderLista(); toast(rep ? MSG_REPETIDO : "Agregado a la lista");
 };
+
+/* ====================== alturas del encabezado fijo ====================== */
+function medirEncabezado() {
+  const h = $("header"), n = $("nav");
+  if (h) document.documentElement.style.setProperty("--hh", h.offsetHeight + "px");
+  if (n) document.documentElement.style.setProperty("--nh", n.offsetHeight + "px");
+}
+if (window.ResizeObserver) { const ro = new ResizeObserver(medirEncabezado); ro.observe($("header")); ro.observe($("nav")); }
+window.addEventListener("resize", medirEncabezado); window.addEventListener("orientationchange", medirEncabezado);
+medirEncabezado();
 
 /* ====================== LISTA ====================== */
 function renderLista() {
   const c = clienteActual(), cat = categoriaActiva();
   $("#lCliente").textContent = (c ? c[3] + " (" + cat + ")" : "Sin cliente. Categoria " + cat);
   const t = $("#lTabla");
-  if (!LINES.length) { t.innerHTML = ""; $("#lTotales").innerHTML = '<span class="muted">La lista esta vacia. Agrega articulos (hasta 15).</span>'; return; }
+  if (!LINES.length) { t.innerHTML = ""; $("#lTotales").innerHTML = '<span class="muted">La lista esta vacia. Agrega articulos (hasta ' + MAX_LINEAS + ').</span>'; return; }
   let h = `<thead><tr><th class="l">Articulo</th><th>P. lista</th><th>Desc max</th><th>Desc %</th><th>Precio</th><th>Cant</th><th>Total</th><th></th></tr></thead><tbody>`;
   LINES.forEach((L, i) => {
     const it = getItem(L.sku);
@@ -467,10 +484,12 @@ function recalcFila(i, skip) {
   $(".c-pl", tr).textContent = money(r.pl);
   $(".c-total", tr).textContent = r.precio > 0 && L.cant > 0 ? money(r.precio * L.cant) : "-";
   const av = avisos(it, cat, r).filter(a => a[0] === "bad");
-  $(".flag", tr).innerHTML = av.map(a => `<span class="over">${esc(a[1])}</span>`).join(" | ");
+  const dup = veces(L.sku) > 1 ? `<span class="tag warn">SKU repetido en la lista (${veces(L.sku)} veces)</span> ` : "";
+  $(".flag", tr).innerHTML = dup + av.map(a => `<span class="over">${esc(a[1])}</span>`).join(" | ");
 }
 function recalcTotales() {
   const cat = categoriaActiva(); let exceso = 0, base = 0, fin = 0;
+  const nDup = new Set(LINES.filter(L => veces(L.sku) > 1).map(L => L.sku)).size;
   LINES.forEach(L => {
     const it = getItem(L.sku); if (!it) return; const r = calcular(it, cat, "desc", L.valor);
     if (r.desc != null && r.desc > it[3] + 1e-6) exceso++;
@@ -478,6 +497,7 @@ function recalcTotales() {
   });
   $("#lTotales").innerHTML = `<dl class="kv"><dt>Total venta</dt><dd>${money(base)}</dd><dt>I.V.A. (13%)</dt><dd>${money(rd(fin - base))}</dd>
     <dt>Total + I.V.A.</dt><dd>${money(fin)}</dd></dl><div class="muted" style="margin-top:8px">${esc(textoValidez())}</div>
+    ${nDup ? `<div class="msg warn">${nDup === 1 ? "1 SKU esta repetido" : nDup + " SKU estan repetidos"} en la lista. Revisa que sea intencional.</div>` : ""}
     ${exceso ? `<div class="msg bad">${exceso === 1 ? "1 línea supera" : exceso + " líneas superan"} el descuento máximo. Requiere Autorización.</div>` : ""}`;
 }
 $("#lTabla").addEventListener("input", e => {
@@ -493,8 +513,8 @@ $("#lTabla").addEventListener("click", e => {
   if (b.dataset.act === "del") { LINES.splice(i, 1); saveLines(); renderLista(); }
 });
 $("#lAgregar").onclick = () => {
-  if (LINES.length >= 15) return toast("La lista ya tiene 15 lineas");
-  pickSku(it => { if (!it) return; LINES.push({ sku: it[0], cant: 1, valor: it[3] }); saveLines(); renderLista(); });
+  if (LINES.length >= MAX_LINEAS) return toast("La lista ya tiene " + MAX_LINEAS + " lineas");
+  pickSku(it => { if (!it) return; const rep = veces(it[0]) > 0; LINES.push({ sku: it[0], cant: 1, valor: it[3] }); saveLines(); renderLista(); if (rep) toast(MSG_REPETIDO); });
 };
 $("#lLimpiar").onclick = () => { if (LINES.length && confirm("Borrar toda la lista?")) { LINES = []; saveLines(); renderLista(); } };
 
@@ -506,7 +526,7 @@ function wrap(ctx, text, maxW) {
 }
 
 /* ====================== OFERTA PARA EL CLIENTE (imagen, solo vendedores) ====================== */
-function ofertaCanvas(cli, lineas) {
+function ofertaCanvas(cli, lineas, pag = 1, npag = 1, totalGral = null) {
   const W = 1100, pad0 = 28, lh = 28, cv = document.createElement("canvas"), ctx = cv.getContext("2d");
   const X = { cod: pad0, desc: 250, precio: 770, cant: 860, fin: W - pad0 };
   const hoy = new Date(), hasta = validezHasta(hoy);
@@ -514,13 +534,14 @@ function ofertaCanvas(cli, lineas) {
   const nom = wrap(ctx, cli[3], W - pad0 * 2 - 130);
   const filas = lineas.map(l => ({ l, d: wrap(ctx, l.desc, X.precio - X.desc - 130) }));
   const hFilas = filas.map(f => Math.max(1, f.d.length) * lh + 18);
-  const multi = lineas.length > 1;
+  const multi = npag > 1 ? pag === npag : lineas.length > 1;
   const H = 86 + (nom.length * lh + 50) + 44 + hFilas.reduce((a, b) => a + b, 0) + (multi ? 56 : 0) + 110;
   cv.width = W; cv.height = H;
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = "#16202c"; ctx.fillRect(0, 0, W, 76);
   ctx.fillStyle = "#fff"; ctx.textBaseline = "alphabetic"; ctx.font = "bold 32px sans-serif"; ctx.fillText("OFERTA DE PRECIOS", pad0, 38);
   ctx.font = "20px sans-serif"; ctx.fillText("Importaciones Industriales MASACA", pad0, 64);
+  if (npag > 1) { ctx.textAlign = "right"; ctx.fillText("Página " + pag + " de " + npag, W - pad0, 64); ctx.textAlign = "left"; }
   let y = 76 + 38;
   ctx.fillStyle = "#5d6b7c"; ctx.font = "22px sans-serif"; ctx.fillText("Cliente", pad0, y);
   ctx.fillStyle = "#16202c"; ctx.font = "bold 24px sans-serif"; nom.forEach((ln, k) => ctx.fillText(ln, pad0 + 130, y + k * lh));
@@ -541,8 +562,8 @@ function ofertaCanvas(cli, lineas) {
     y += hFilas[i];
   });
   if (multi) {
-    const tot = lineas.reduce((a, l) => a + l.final, 0);
-    ctx.textAlign = "left"; ctx.fillStyle = "#16202c"; ctx.font = "bold 24px sans-serif"; ctx.fillText("TOTAL + I.V.A.", X.cod, y + 38);
+    const tot = totalGral != null ? totalGral : lineas.reduce((a, l) => a + l.final, 0);
+    ctx.textAlign = "left"; ctx.fillStyle = "#16202c"; ctx.font = "bold 24px sans-serif"; ctx.fillText(npag > 1 ? "TOTAL + I.V.A. (todas las páginas)" : "TOTAL + I.V.A.", X.cod, y + 38);
     ctx.textAlign = "right"; ctx.fillText(money(tot), X.fin, y + 38); y += 56;
   }
   y += 18;
@@ -555,14 +576,14 @@ function ofertaCanvas(cli, lineas) {
   ctx.strokeStyle = "#16202c"; ctx.lineWidth = 3; ctx.strokeRect(1.5, 1.5, W - 3, H - 3);
   return cv;
 }
-function compartirOferta(cv, cli) {
-  cv.toBlob(async blob => {
-    const nom = "oferta_" + norm(cli[3]).replace(/[^a-z0-9]+/g, "_").slice(0, 30) + "_" + isoDate(new Date()) + ".png";
-    const file = new File([blob], nom, { type: "image/png" });
-    try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Oferta de precios" }); return; } }
-    catch (e) { if (e && e.name === "AbortError") return; }
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = nom; a.click(); toast("Imagen descargada");
-  }, "image/png");
+async function compartirOfertas(cvs, cli) {   // varias imagenes en un solo envio
+  const base = "oferta_" + norm(cli[3]).replace(/[^a-z0-9]+/g, "_").slice(0, 30) + "_" + isoDate(new Date());
+  const blobs = await Promise.all(cvs.map(cv => new Promise(r => cv.toBlob(r, "image/png"))));
+  const files = blobs.map((b, i) => new File([b], base + (cvs.length > 1 ? "_p" + (i + 1) : "") + ".png", { type: "image/png" }));
+  try { if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files, title: "Oferta de precios" }); return; } }
+  catch (e) { if (e && e.name === "AbortError") return; }
+  files.forEach((f, i) => setTimeout(() => { const a = document.createElement("a"); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); }, i * 500));
+  toast(files.length > 1 ? files.length + " imagenes descargadas" : "Imagen descargada");
 }
 function exportarOferta(pares) {   // pares: [{it, r, cant}]
   const cli = clienteActual(); if (!cli) return toast("Elige un cliente primero");
@@ -575,11 +596,13 @@ function exportarOferta(pares) {   // pares: [{it, r, cant}]
     const x = lineaVend(p.r.precio, p.cant);
     lineas.push({ cod: p.it[0], desc: p.it[1], precio: rd(p.r.precio), cant: p.cant, final: x.final });
   }
-  compartirOferta(ofertaCanvas(cli, lineas), cli);
+  const n = Math.ceil(lineas.length / POR_IMAGEN), tg = lineas.reduce((a, l) => a + l.final, 0), cvs = [];
+  for (let k = 0; k < n; k++) cvs.push(ofertaCanvas(cli, lineas.slice(k * POR_IMAGEN, (k + 1) * POR_IMAGEN), k + 1, n, tg));
+  compartirOfertas(cvs, cli);
 }
 $("#pExportar").onclick = () => {
   if (!CALC.sku) return toast("Elige un articulo primero");
-  const it = getItem(CALC.sku); exportarOferta([{ it, r: calcular(it, categoriaActiva(), CALC.modo, CALC.valor), cant: parseNum($("#pCant").value) }]);
+  const it = getItem(CALC.sku); exportarOferta([{ it, r: calcular(it, categoriaActiva(), "desc", CALC.valor), cant: parseNum($("#pCant").value) }]);
 };
 $("#lExportar").onclick = () => exportarOferta(LINES.map(L => getItem(L.sku) ? { it: getItem(L.sku), r: calcular(getItem(L.sku), categoriaActiva(), "desc", L.valor), cant: L.cant } : null).filter(Boolean));
 
