@@ -83,6 +83,7 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
 .modal{background:var(--panel);border-radius:14px;padding:18px;width:min(640px,100%);max-height:88vh;overflow:auto;border:1px solid var(--line)}
 .lock{background:var(--bg);z-index:60;align-items:center}
 #ovPass{z-index:65}
+#ovVence{background:var(--bg);z-index:55;align-items:center}
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:999px;z-index:80;opacity:0;pointer-events:none;transition:opacity .2s}
 .toast.on{opacity:.96}
 </style>
@@ -98,6 +99,7 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
   <button class="chip" id="chipDatos" type="button">Sin datos</button>
   <button class="chip" id="chipBloquear" type="button">Bloquear</button>
 </header>
+<div id="bnNuevo" class="msg warn" style="display:none;margin:8px 12px">Hay precios nuevos publicados. <button class="btn" id="bnAct" type="button" style="margin-left:8px">Actualizar ahora</button></div>
 <nav role="tablist">
   <button role="tab" data-tab="precio" aria-selected="true">Precio unitario</button>
   <button role="tab" data-tab="lista" aria-selected="false">Lista (max 15)</button>
@@ -173,10 +175,12 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
     <div class="card">
       <h2>Acciones</h2>
       <div class="grid">
-        <div><button class="btn" id="dImportar" type="button">Importar paquete (.json o .enc)</button>
+        <div><button class="btn" id="dActualizar" type="button">Actualizar precios (por internet)</button>
+          <p class="muted" style="margin:6px 0 0">Baja los precios más recientes publicados por la empresa. Necesita internet solo en ese momento; después la app trabaja sin conexión. Te pide la clave de vendedores.</p></div>
+        <div><button class="btn sec" id="dImportar" type="button">Importar paquete desde un archivo (.json o .enc)</button>
           <p class="muted" style="margin:6px 0 0">Solo acepta el paquete de vendedores (macro ExportarPaqueteVendedores). Un paquete de gerencia se rechaza. La app lo protege con tu clave antes de guardarlo.</p></div>
         <div><button class="btn sec" id="dExportar" type="button">Exportar paquete cifrado (.enc)</button>
-          <p class="muted" style="margin:6px 0 0">Para pasarlo a otra tableta. Se abre con la misma clave.</p></div>
+          <p class="muted" style="margin:6px 0 0">Para publicarlo en el repositorio o pasarlo a otra tableta. Se abre con la misma clave.</p></div>
         <div><button class="btn bad" id="dBorrar" type="button">Borrar los datos de esta tableta</button></div>
       </div>
       <input type="file" id="dFile" accept=".json,.enc,.txt,application/json" hidden>
@@ -209,6 +213,15 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
   <div id="lkErr" class="msg bad" style="display:none"></div>
   <div class="row" style="margin-top:12px"><button class="btn" id="lkOk" type="button">Abrir</button>
     <button class="btn sec" id="lkImp" type="button">Importar otro paquete</button></div>
+</div></div>
+
+<div class="overlay" id="ovVence"><div class="modal" style="max-width:480px">
+  <h2>Actualiza los precios</h2>
+  <div id="vnTexto" class="msg bad"></div>
+  <p class="muted">Los precios tienen mas de 15 dias, por eso la herramienta esta detenida. Conectate a internet y toca Actualizar precios. En cuanto los datos esten al dia, la herramienta se habilita sola.</p>
+  <div class="row" style="margin-top:12px"><button class="btn" id="vnAct" type="button">Actualizar precios</button>
+    <button class="btn sec" id="vnImp" type="button">Importar archivo</button>
+    <button class="btn sec" id="vnBloq" type="button">Bloquear</button></div>
 </div></div>
 
 <div class="overlay" id="ovRechazo" style="z-index:70"><div class="modal" style="max-width:480px">
@@ -289,7 +302,7 @@ async function idbDel(k) { const db = await idb(); return new Promise((res, rej)
 // (IndexedDB "precios-vendedores" y claves "pv_"), distinto al de las apps de gerencia, aunque esten en el mismo sitio web.
 // item = [codigo, nombre, costo(siempre null aqui), descMax, stock(siempre null aqui), categoria, subcategoria, activo, AAA, A, B, C]
 // cliente = [vendedor, zona, codigo, nombre, categ, grupo]
-const VERSION_APP = "Vendedores 2.0";
+const VERSION_APP = "Vendedores 2.1";
 let DATA = null, BLOB = null, IDX = new Map(), SRCH = [];
 let CFG = Object.assign({ categoria: "AAA", cliente: "" }, lsGet("cfg", {}));
 let CALC = { sku: null, valor: 0 };
@@ -313,7 +326,7 @@ function setData(d) {
   const vs = [...new Set(DATA.clientes.map(c => c[0]).filter(Boolean))].sort();
   $("#cGrupo").innerHTML = '<option value="">Todos</option>' + gs.map(g => `<option>${esc(g)}</option>`).join("");
   $("#cVend").innerHTML = '<option value="">Todos</option>' + vs.map(g => `<option>${esc(g)}</option>`).join("");
-  renderAll();
+  renderAll(); revisarVigencia(); buscarNuevos();
 }
 const getItem = sku => IDX.get(String(sku || "").toLowerCase()) || null;
 function clienteActual() { return DATA && CFG.cliente ? DATA.clientes.find(c => c[2] === CFG.cliente) || null : null; }
@@ -680,12 +693,13 @@ function antiguedad() {
 function renderDatos() {
   const d = DATA, a = antiguedad();
   const chip = $("#chipDatos"); chip.className = "chip" + (a == null ? "" : a <= 2 ? " age-ok" : a <= 7 ? " age-warn" : " age-bad");
-  if (!d) { chip.textContent = "Sin datos"; $("#dEstado").innerHTML = "<dt>Estado</dt><dd>Sin datos cargados</dd><dt>Version</dt><dd>" + VERSION_APP + "</dd>"; $("#dAviso").innerHTML = '<div class="msg warn">Importa el paquete de vendedores para empezar.</div>'; return; }
+  if (!d) { chip.textContent = "Sin datos"; $("#dEstado").innerHTML = "<dt>Estado</dt><dd>Sin datos cargados</dd><dt>Version</dt><dd>" + VERSION_APP + "</dd>"; $("#dAviso").innerHTML = '<div class="msg warn">Toca Actualizar precios (con internet) para empezar.</div>'; return; }
   const g = new Date(d.generado);
   chip.textContent = "Datos del " + pad(g.getDate()) + "/" + pad(g.getMonth() + 1) + " " + pad(g.getHours()) + ":" + pad(g.getMinutes());
   $("#dEstado").innerHTML = `<dt>Generado</dt><dd>${fechaCR(g)} ${pad(g.getHours())}:${pad(g.getMinutes())}</dd>
     <dt>Antiguedad</dt><dd>${a === 0 ? "hoy" : a + " dia(s)"}</dd><dt>Articulos</dt><dd>${d.items.length}</dd><dt>Clientes</dt><dd>${d.clientes.length}</dd><dt>Version</dt><dd>${VERSION_APP}</dd>`;
-  $("#dAviso").innerHTML = a > 2 ? `<div class="msg ${a > 7 ? "bad" : "warn"}">Los precios pueden haber cambiado desde ${fechaCR(g)}. Confirma antes de comprometer un precio.</div>` : "";
+  const vg = vigencia();
+  $("#dAviso").innerHTML = (vg.ok && vg.restan != null && vg.restan <= 5 ? `<div class="msg warn">Quedan ${vg.restan} dia(s) antes de que la herramienta se detenga por precios vencidos. Toca Actualizar precios.</div>` : "") + (a > 2 ? `<div class="msg ${a > 7 ? "bad" : "warn"}">Los precios pueden haber cambiado desde ${fechaCR(g)}. Confirma antes de comprometer un precio.</div>` : "");
 }
 $("#chipDatos").onclick = () => showTab("datos");
 
@@ -716,30 +730,98 @@ $("#dFile").addEventListener("change", async e => {
       const err = validarPaquete(obj); if (err) return rechazo(err);   // se valida ANTES de pedir clave y de guardar
       const p = await askPass({ titulo: "Proteger los datos", texto: "Crea una clave para esta tableta. Se pedira cada vez que abras la app. Elimina despues el archivo .json que importaste.", confirmar: true });
       if (!p) return; toast("Cifrando...");
-      BLOB = await encryptObj(obj, p); await idbSet("paquete", BLOB); $("#ovLock").classList.remove("on"); setData(obj); toast("Datos guardados y protegidos");
+      BLOB = await encryptObj(obj, p); BLOB.generado = obj.generado; await idbSet("paquete", BLOB); $("#ovLock").classList.remove("on"); setData(obj); toast("Datos guardados y protegidos");
     } else if (obj && obj.salt && obj.data) {
       const p = await askPass({ titulo: "Abrir paquete cifrado", texto: "Escribe la clave con la que se cifro el paquete.", confirmar: false });
       if (!p) return; toast("Abriendo...");
       const d = await decryptBlob(obj, p);
       const err = validarPaquete(d); if (err) return rechazo(err);   // un .enc de gerencia tampoco entra
-      BLOB = obj; await idbSet("paquete", obj); $("#ovLock").classList.remove("on"); setData(d); toast("Datos importados");
+      BLOB = obj; BLOB.generado = d.generado; await idbSet("paquete", BLOB); $("#ovLock").classList.remove("on"); setData(d); toast("Datos importados");
     } else toast("El archivo no es un paquete valido");
   } catch (er) { toast("Clave incorrecta o archivo danado"); }
 });
 $("#dExportar").onclick = () => {
   if (!BLOB) return toast("No hay datos para exportar");
   const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(BLOB)], { type: "application/json" }));
-  a.download = "paquete_precios_vendedores.enc"; a.click();
+  a.download = "paquete_vendedores.enc"; a.click();
 };
 $("#dBorrar").onclick = async () => {
   if (!confirm("Borrar los datos guardados en esta tableta? Tendras que importar el paquete otra vez.")) return;
   await idbDel("paquete"); BLOB = null; DATA = null; IDX = new Map(); SRCH = []; renderAll(); toast("Datos borrados");
 };
 
+/* ====================== vigencia (15 dias) ====================== */
+const MAX_DIAS = 15;
+function vigencia() {
+  if (!DATA) return { ok: true };
+  const t = new Date(DATA.generado).getTime(), ahora = Date.now();
+  if (!isFinite(t)) return { ok: false, motivo: "El paquete no trae una fecha de generacion valida." };
+  if (t > ahora + 864e5) return { ok: false, motivo: "La fecha del paquete (" + fechaCR(new Date(t)) + ") es posterior a la fecha de esta tableta. Revisa la fecha y hora de la tableta." };
+  const dias = (ahora - t) / 864e5;
+  return dias > MAX_DIAS ? { ok: false, motivo: "Los precios son del " + fechaCR(new Date(t)) + " (" + (Math.floor(dias) > MAX_DIAS ? "hace " + Math.floor(dias) + " dias" : "hace mas de " + MAX_DIAS + " dias") + "). El maximo permitido es " + MAX_DIAS + " dias." }
+    : { ok: true, restan: Math.max(0, Math.ceil(MAX_DIAS - dias)) };
+}
+function revisarVigencia() {
+  const v = vigencia(), ov = $("#ovVence");
+  if (v.ok) { ov.classList.remove("on"); return; }
+  $("#vnTexto").textContent = v.motivo; ov.classList.add("on");
+}
+setInterval(revisarVigencia, 60000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) revisarVigencia(); });
+
+/* ====================== actualizar por internet ====================== */
+// El paquete publicado es SIEMPRE un archivo cifrado (.enc) en la misma carpeta de esta app. Nunca se acepta un paquete sin cifrar.
+const URL_PAQUETE = "paquete_vendedores.enc";
+const ts = s => { const t = new Date(s).getTime(); return isFinite(t) ? t : null; };
+async function bajarPaquete() {
+  const r = await fetch(URL_PAQUETE + "?t=" + Date.now(), { cache: "no-store" });
+  if (!r.ok) throw new Error("http " + r.status);
+  let blob; try { blob = await r.json(); } catch (e) { throw new Error("formato"); }
+  if (blob && Array.isArray(blob.items)) throw new Error("sincifrar");
+  if (!blob || !blob.salt || !blob.data) throw new Error("formato");
+  return blob;
+}
+const actual = () => (DATA && ts(DATA.generado)) || (BLOB && ts(BLOB.generado)) || null;
+let ACTUALIZANDO = false;
+async function actualizar() {
+  if (ACTUALIZANDO) return; ACTUALIZANDO = true;
+  try {
+    toast("Buscando precios nuevos...");
+    let blob;
+    try { blob = await bajarPaquete(); }
+    catch (e) {
+      if (e.message === "sincifrar") return rechazo("El archivo publicado no esta cifrado. Por seguridad la app no lo acepta. Avisa a Gerencia de Ventas.");
+      if (e.message === "formato") return rechazo("El archivo publicado no es un paquete valido. Avisa a Gerencia de Ventas.");
+      if (/^http 404/.test(e.message)) return rechazo("Todavia no hay precios publicados para descargar. Avisa a Gerencia de Ventas.");
+      return toast("No se pudo descargar. Revisa tu conexion a internet e intenta de nuevo.");
+    }
+    const nueva = ts(blob.generado), cur = actual();
+    if (nueva != null && cur != null && nueva <= cur) { $("#bnNuevo").style.display = "none"; return toast("Ya tienes los precios mas recientes"); }
+    const p = await askPass({ titulo: "Actualizar precios", texto: "Escribe la clave de vendedores.", confirmar: false });
+    if (!p) return; toast("Abriendo...");
+    let d; try { d = await decryptBlob(blob, p); } catch (e) { return toast("Clave incorrecta o archivo danado"); }
+    const err = validarPaquete(d); if (err) return rechazo(err);
+    if (cur != null && ts(d.generado) != null && ts(d.generado) <= cur) return toast("Ya tienes los precios mas recientes");
+    blob.generado = d.generado; BLOB = blob; await idbSet("paquete", BLOB);
+    $("#ovLock").classList.remove("on"); $("#bnNuevo").style.display = "none"; setData(d); toast("Precios actualizados");
+  } finally { ACTUALIZANDO = false; }
+}
+// Con los datos abiertos y con internet, avisa si hay precios mas nuevos (no descifra nada; compara la fecha del sobre).
+async function buscarNuevos() {
+  if (!navigator.onLine || !DATA) return;
+  try {
+    const blob = await bajarPaquete(), nueva = ts(blob.generado), cur = actual();
+    $("#bnNuevo").style.display = nueva != null && cur != null && nueva > cur ? "block" : "none";
+  } catch (e) { /* sin conexion o sin paquete publicado: no se avisa */ }
+}
+$("#dActualizar").onclick = actualizar; $("#bnAct").onclick = actualizar; $("#vnAct").onclick = actualizar;
+$("#vnImp").onclick = () => $("#dFile").click();
+$("#vnBloq").onclick = () => bloquear();
+
 /* ====================== bloqueo ====================== */
 function bloquear() {
   if (!BLOB) return;
-  DATA = null; IDX = new Map(); SRCH = []; $("#lkClave").value = ""; $("#lkErr").style.display = "none"; $("#ovLock").classList.add("on");
+  DATA = null; IDX = new Map(); SRCH = []; $("#lkClave").value = ""; $("#lkErr").style.display = "none"; $("#ovLock").classList.add("on"); $("#ovVence").classList.remove("on"); $("#bnNuevo").style.display = "none";
   $("#pRes").style.display = "none"; renderAll();
 }
 $("#chipBloquear").onclick = bloquear;
