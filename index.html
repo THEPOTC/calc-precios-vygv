@@ -56,6 +56,11 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
 .btn.sec{background:transparent;color:var(--accent)}
 .btn.bad{background:transparent;color:var(--bad);border-color:var(--bad)}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn.aut{background:transparent;color:var(--warn);border-color:var(--warn);font-weight:650}
+.aurow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0}
+.aurow small{display:block;color:var(--muted)}
+.aurow .auInfo{font-size:14px;margin-top:6px}
+.aurow .auInfo.bad{color:var(--bad);font-weight:650} .aurow .auInfo.ok{color:var(--ok);font-weight:650}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;margin:0}
 .kv dt{color:var(--muted)} .kv dd{margin:0;text-align:right;font-weight:600}
 .big{font-size:26px;font-weight:700}
@@ -138,6 +143,7 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
       <div class="row" style="margin-top:12px">
         <button class="btn sec" id="pAgregar" type="button">Agregar a la lista</button>
         <button class="btn" id="pExportar" type="button">Exportar imagen</button>
+        <button class="btn aut" id="pAutorizar" type="button">Pedir autorización</button>
       </div>
     </div>
   </div>
@@ -151,6 +157,7 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
     <button class="btn bad" id="lLimpiar" type="button" style="flex:0 0 auto">Limpiar lista</button>
     <button class="btn" id="lExportar" type="button" style="flex:0 0 auto">Exportar imagen</button>
     <button class="btn sec" id="lExcel" type="button" style="flex:0 0 auto">Exportar Excel</button>
+    <button class="btn aut" id="lAutorizar" type="button" style="flex:0 0 auto">Pedir autorización</button>
   </div>
   <div class="scroll lst"><table class="tbl" id="lTabla"></table></div>
   <div id="lTotales" class="card" style="margin-top:12px"></div>
@@ -216,6 +223,19 @@ input:focus,select:focus,button:focus-visible{outline:2px solid var(--accent);ou
   <div id="lkErr" class="msg bad" style="display:none"></div>
   <div class="row" style="margin-top:12px"><button class="btn" id="lkOk" type="button">Abrir</button>
     <button class="btn sec" id="lkImp" type="button">Importar otro paquete</button></div>
+</div></div>
+
+<div class="overlay" id="ovAut"><div class="modal" style="max-width:640px">
+  <h2 style="margin:0 0 6px;color:var(--ink);text-transform:none;font-size:19px;letter-spacing:0">Solicitud de autorización de precios</h2>
+  <div class="msg warn" style="margin-top:4px">Documento interno para Gerencia de Ventas. No se envía al cliente.</div>
+  <div id="auCliente" style="font-weight:650;margin:6px 0 0"></div>
+  <p class="muted" style="margin:4px 0 0">Escribe el precio target unitario (sin I.V.A.) de cada artículo que quieres solicitar. Los que dejes vacíos no se incluyen.</p>
+  <div id="auLineas"></div>
+  <label for="auNota" style="margin-top:8px">Nota para Gerencia (opcional)</label>
+  <input type="text" id="auNota" maxlength="160" autocomplete="off" placeholder="Ej: compra mensual, competencia, proyecto">
+  <div id="auErr" class="msg bad" style="display:none"></div>
+  <div class="row" style="margin-top:12px"><button class="btn" id="auOk" type="button">Generar y enviar</button>
+    <button class="btn sec" id="auCancel" type="button">Cancelar</button></div>
 </div></div>
 
 <div class="overlay" id="ovVence"><div class="modal" style="max-width:480px">
@@ -305,7 +325,7 @@ async function idbDel(k) { const db = await idb(); return new Promise((res, rej)
 // (IndexedDB "precios-vendedores" y claves "pv_"), distinto al de las apps de gerencia, aunque esten en el mismo sitio web.
 // item = [codigo, nombre, costo(siempre null aqui), descMax, stock(siempre null aqui), categoria, subcategoria, activo, AAA, A, B, C]
 // cliente = [vendedor, zona, codigo, nombre, categ, grupo]
-const VERSION_APP = "Vendedores 2.2";
+const VERSION_APP = "Vendedores 2.3";
 let DATA = null, BLOB = null, IDX = new Map(), SRCH = [];
 let CFG = Object.assign({ categoria: "AAA", cliente: "" }, lsGet("cfg", {}));
 let CALC = { sku: null, valor: 0 };
@@ -357,7 +377,7 @@ const fmtF = d => pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + "/" + d.getFu
 const validezHasta = d => new Date(d.getFullYear(), d.getMonth(), d.getDate() + DIAS_VALIDEZ);
 const textoValidez = () => { const h = new Date(); return "Fecha del cálculo: " + fmtF(h) + " | Oferta válida hasta: " + fmtF(validezHasta(h)) + " (" + DIAS_VALIDEZ + " días naturales)"; };
 const lineaVend = (precio, cant) => { const base = rd(precio * cant), final = rd(base * IVA); return { base, final }; };
-const MSG_EXCESO_VEND = "Descuento supera el máximo. Este precio requiere Autorización.";
+const MSG_EXCESO_VEND = "Descuento supera el máximo. Este precio requiere Autorización: usa el botón Pedir autorización.";
 function avisos(it, cat, r) {
   const a = [];
   if (!it[7]) a.push(["warn", "Articulo inactivo en Zoho"]);
@@ -576,11 +596,11 @@ function ofertaCanvas(cli, lineas, pag = 1, npag = 1, totalGral = null) {
   ctx.strokeStyle = "#16202c"; ctx.lineWidth = 3; ctx.strokeRect(1.5, 1.5, W - 3, H - 3);
   return cv;
 }
-async function compartirOfertas(cvs, cli) {   // varias imagenes en un solo envio
-  const base = "oferta_" + norm(cli[3]).replace(/[^a-z0-9]+/g, "_").slice(0, 30) + "_" + isoDate(new Date());
+async function compartirOfertas(cvs, cli, pref = "oferta", titulo = "Oferta de precios") {   // varias imagenes en un solo envio
+  const base = pref + "_" + norm(cli[3]).replace(/[^a-z0-9]+/g, "_").slice(0, 30) + "_" + isoDate(new Date());
   const blobs = await Promise.all(cvs.map(cv => new Promise(r => cv.toBlob(r, "image/png"))));
   const files = blobs.map((b, i) => new File([b], base + (cvs.length > 1 ? "_p" + (i + 1) : "") + ".png", { type: "image/png" }));
-  try { if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files, title: "Oferta de precios" }); return; } }
+  try { if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files, title: titulo }); return; } }
   catch (e) { if (e && e.name === "AbortError") return; }
   files.forEach((f, i) => setTimeout(() => { const a = document.createElement("a"); a.href = URL.createObjectURL(f); a.download = f.name; a.click(); }, i * 500));
   toast(files.length > 1 ? files.length + " imagenes descargadas" : "Imagen descargada");
@@ -605,6 +625,154 @@ $("#pExportar").onclick = () => {
   const it = getItem(CALC.sku); exportarOferta([{ it, r: calcular(it, categoriaActiva(), "desc", CALC.valor), cant: parseNum($("#pCant").value) }]);
 };
 $("#lExportar").onclick = () => exportarOferta(LINES.map(L => getItem(L.sku) ? { it: getItem(L.sku), r: calcular(getItem(L.sku), categoriaActiva(), "desc", L.valor), cant: L.cant } : null).filter(Boolean));
+
+
+/* ====================== SOLICITUD DE AUTORIZACION DE PRECIOS (interna, para Gerencia) ====================== */
+// Es un documento interno: titulo grande, franja "NO ENVIAR AL CLIENTE", marca de agua diagonal y nombre de archivo SOLICITUD_AUTORIZACION_...
+// Lleva el codigo y el nombre del cliente, el precio de lista, el descuento maximo y el precio target pedido. No lleva costos (esta app no los tiene).
+const AUT_POR_IMAGEN = 2;
+let AUT = [];
+function solicitudCanvas(cli, lineas, nota, pag, npag, totalGral, nTotal) {
+  const W = 900, M = 36, CW = W - 2 * M, ROJO = "#a3221a", hoy = new Date();
+  const dibujar = (ctx, alto) => {
+    const R = (c, x, y, w, h) => { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); };
+    const T = (s, x, y, font, color, al) => { ctx.font = font; ctx.fillStyle = color; ctx.textAlign = al || "left"; ctx.fillText(s, x, y); };
+    const ajustar = (s, fs, mx, bold) => { while (fs > 16) { ctx.font = (bold ? "bold " : "") + fs + "px sans-serif"; if (ctx.measureText(s).width <= mx) break; fs -= 2; } return fs; };
+    if (alto) R("#fff", 0, 0, W, alto);
+    // --- titulo
+    const t1 = "SOLICITUD DE AUTORIZACIÓN", t2 = "DE PRECIOS";
+    const fs = Math.min(ajustar(t1, 46, CW, true), 46);
+    R(ROJO, 0, 0, W, fs * 2 + 52);
+    T(t1, W / 2, 26 + fs, "bold " + fs + "px sans-serif", "#fff", "center");
+    T(t2, W / 2, 26 + fs * 2 + 6, "bold " + fs + "px sans-serif", "#fff", "center");
+    let y = fs * 2 + 52;
+    R("#ffd54a", 0, y, W, 56);
+    const f2 = ajustar("USO INTERNO, NO ENVIAR AL CLIENTE", 28, CW, true);
+    T("USO INTERNO, NO ENVIAR AL CLIENTE", W / 2, y + 38, "bold " + f2 + "px sans-serif", "#16202c", "center");
+    y += 56 + 34;
+    if (npag > 1) { T("Página " + pag + " de " + npag, W - M, y - 8, "22px sans-serif", "#5d6b7c", "right"); }
+    // --- datos del cliente y de la solicitud
+    const filas = [["CÓDIGO", cli[2], 38], ["CLIENTE", cli[3], 30], ["CATEGORÍA", categoriaActiva(), 28], ["VENDEDOR", cli[0], 28], ["ZONA", cli[1], 28],
+      ["SOLICITADO", fmtF(hoy) + " " + pad(hoy.getHours()) + ":" + pad(hoy.getMinutes()), 28], ["LISTA DEL", DATA && DATA.generado ? fmtF(new Date(DATA.generado)) : "-", 28]];
+    filas.forEach(([lab, val, f]) => {
+      if (val == null || String(val).trim() === "") return;
+      ctx.font = "bold " + f + "px sans-serif";
+      const ls = wrap(ctx, val, CW - 210);
+      T(lab, M, y, "20px sans-serif", "#5d6b7c");
+      ls.forEach((ln, k) => T(ln, M + 210, y + k * (f + 6), "bold " + f + "px sans-serif", "#16202c"));
+      y += ls.length * (f + 6) + 8;
+    });
+    T("Precios en colones, sin I.V.A.", M, y + 6, "italic 22px sans-serif", "#5d6b7c"); y += 36;
+    if (nota && pag === 1) {
+      ctx.font = "26px sans-serif"; const ls = wrap(ctx, nota, CW - 36), h = 44 + ls.length * 32;
+      R("#eef1f5", M, y, CW, h);
+      T("NOTA PARA GERENCIA", M + 18, y + 30, "bold 20px sans-serif", "#5d6b7c");
+      ls.forEach((ln, k) => T(ln, M + 18, y + 64 + k * 32, "26px sans-serif", "#16202c"));
+      y += h + 16;
+    }
+    // --- articulos
+    lineas.forEach((l, k) => {
+      const n = (pag - 1) * AUT_POR_IMAGEN + k + 1;
+      ctx.font = "26px sans-serif"; const ds = wrap(ctx, l.desc, CW - 36);
+      const h = 52 + 38 + ds.length * 32 + 4 + 40 + 40 + 62 + 40 + 36 + 40 + 40 + 16;
+      ctx.strokeStyle = "#8793a1"; ctx.lineWidth = 2; ctx.strokeRect(M, y, CW, h);
+      R("#eef1f5", M, y, CW, 52);
+      T(n + ". " + l.cod, M + 18, y + 37, "bold 32px sans-serif", "#16202c");
+      if (!l.activo) T("inactivo en Zoho", M + CW - 18, y + 36, "bold 20px sans-serif", ROJO, "right");
+      let yy = y + 52 + 38;
+      ds.forEach((ln, i) => T(ln, M + 18, yy + i * 32, "26px sans-serif", "#16202c")); yy += ds.length * 32 + 4;
+      const fila = (lab, val, bold) => { T(lab, M + 18, yy + 26, "24px sans-serif", "#5d6b7c"); T(val, M + CW - 18, yy + 26, (bold ? "bold " : "") + "28px sans-serif", "#16202c", "right"); yy += 40; };
+      fila("Precio de lista", money(l.lista), false);
+      fila("Desc. máximo permitido", pct(l.dmax) + "  (" + money(l.pmax) + ")", false);
+      R("#fff2c2", M + 2, yy + 2, CW - 4, 58); ctx.strokeStyle = "#e0b04a"; ctx.lineWidth = 2; ctx.strokeRect(M + 2, yy + 2, CW - 4, 58);
+      T("PRECIO TARGET", M + 18, yy + 40, "bold 26px sans-serif", "#16202c"); T(money(l.target), M + CW - 18, yy + 42, "bold 38px sans-serif", "#16202c", "right"); yy += 62;
+      fila("Desc. target", pct(l.dt), true);
+      const ex = (l.dt - l.dmax) * 100;
+      if (ex > 0.004) T("Excede el máximo en " + rd(ex).toFixed(2) + " puntos", M + CW - 18, yy + 22, "bold 24px sans-serif", ROJO, "right");
+      else T("Dentro del descuento máximo", M + CW - 18, yy + 22, "bold 24px sans-serif", "#1b7a43", "right");
+      yy += 36;
+      fila("Cantidad", String(l.cant), true);
+      fila("Monto target sin I.V.A.", money(rd(l.target * l.cant)), true);
+      y += h + 18;
+    });
+    if (pag === npag && nTotal > 1) {
+      R("#16202c", M, y, CW, 70);
+      T("TOTAL TARGET (" + nTotal + " art.)", M + 18, y + 44, "bold 26px sans-serif", "#fff"); T(money(totalGral), M + CW - 18, y + 46, "bold 34px sans-serif", "#fff", "right"); y += 70 + 18;
+    }
+    R(ROJO, 0, y, W, 60);
+    const f3 = ajustar("SOLICITUD INTERNA. NO ES UNA OFERTA NI UNA COTIZACIÓN.", 22, CW, true);
+    T("SOLICITUD INTERNA. NO ES UNA OFERTA NI UNA COTIZACIÓN.", W / 2, y + 38, "bold " + f3 + "px sans-serif", "#fff", "center");
+    y += 60;
+    if (alto) {   // marca de agua diagonal y borde
+      ctx.save(); ctx.globalAlpha = 0.08; ctx.fillStyle = ROJO; ctx.font = "bold 76px sans-serif"; ctx.textAlign = "center";
+      for (let yy = 380; yy < alto + 200; yy += 560) { ctx.save(); ctx.translate(W / 2, yy); ctx.rotate(-Math.PI / 7); ctx.fillText("SOLICITUD INTERNA", 0, 0); ctx.restore(); }
+      ctx.restore();
+      ctx.strokeStyle = ROJO; ctx.lineWidth = 8; ctx.strokeRect(4, 4, W - 8, alto - 8);
+    }
+    return y;
+  };
+  const tmp = document.createElement("canvas"); tmp.width = W; tmp.height = 9000;
+  const H = dibujar(tmp.getContext("2d"), 0);
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  dibujar(cv.getContext("2d"), H);
+  return cv;
+}
+function textoRestriccion(it, pl, v) {   // texto en vivo bajo el campo Target
+  if (!(pl > 0)) return { c: "bad", t: "Sin precio de lista para esta categoria: no se puede solicitar." };
+  if (!(v > 0)) return { c: "", t: "" };
+  if (v > pl + 0.005) return { c: "bad", t: "El target es mayor al precio de lista (" + money(pl) + ")." };
+  const dt = 1 - v / pl, ex = (dt - it[3]) * 100;
+  return ex > 0.004 ? { c: "bad", t: "Descuento target " + pct(dt) + ": excede el maximo (" + pct(it[3]) + ") en " + rd(ex).toFixed(2) + " puntos." }
+    : { c: "ok", t: "Descuento target " + pct(dt) + ": esta dentro del maximo (" + pct(it[3]) + "), no necesita autorizacion." };
+}
+function abrirAutorizacion(entradas) {   // entradas: [{it, cant, valor}]
+  const cli = clienteActual(); if (!cli) return toast("Elige un cliente primero");
+  if (!entradas.length) return toast("No hay articulos para solicitar");
+  const cat = categoriaActiva();
+  AUT = entradas.map(e => {
+    const r = calcular(e.it, cat, "desc", e.valor), exc = r.desc != null && r.desc > e.it[3] + 1e-6 && r.precio > 0;
+    return { it: e.it, cant: e.cant > 0 ? e.cant : 1, pl: r.pl, pre: exc ? num2(r.precio) : "" };   // si ya supera el maximo, sugiere ese precio como target
+  });
+  $("#auCliente").textContent = cli[2] + " | " + cli[3] + " | Categoria " + cat;
+  $("#auNota").value = ""; $("#auErr").style.display = "none";
+  $("#auLineas").innerHTML = AUT.map((a, i) => `<div class="aurow" data-i="${i}">
+      <div><strong>${esc(a.it[0])}</strong> ${a.it[7] ? "" : '<span class="tag warn">inactivo</span>'}<small>${esc(a.it[1])}</small></div>
+      <dl class="kv" style="margin:6px 0"><dt>Precio lista</dt><dd>${money(a.pl)}</dd><dt>Desc. maximo</dt><dd>${pct(a.it[3])} (${a.pl == null ? "-" : money(a.pl * (1 - a.it[3]))})</dd><dt>Cantidad</dt><dd>${esc(a.cant)}</dd></dl>
+      <label>Precio target unitario (sin I.V.A.)</label>
+      <input type="text" inputmode="decimal" data-f="target" value="${esc(a.pre)}" ${a.pl > 0 ? "" : "disabled"} autocomplete="off">
+      <div class="auInfo"></div></div>`).join("");
+  $$("#auLineas .aurow").forEach(row => actualizarFilaAut(row));
+  $("#ovAut").classList.add("on");
+}
+function actualizarFilaAut(row) {
+  const a = AUT[+row.dataset.i], v = parseNum($('[data-f="target"]', row).value), x = textoRestriccion(a.it, a.pl, v), el = $(".auInfo", row);
+  el.className = "auInfo " + x.c; el.textContent = x.t;
+}
+$("#auLineas").addEventListener("input", e => { const row = e.target.closest(".aurow"); if (row) actualizarFilaAut(row); });
+$("#auCancel").onclick = () => $("#ovAut").classList.remove("on");
+$("#auOk").onclick = () => {
+  const cli = clienteActual(), err = m => { $("#auErr").textContent = m; $("#auErr").style.display = "block"; };
+  if (!cli) return err("Elige un cliente primero.");
+  const lineas = [];
+  for (const row of $$("#auLineas .aurow")) {
+    const a = AUT[+row.dataset.i], raw = $('[data-f="target"]', row).value.trim(); if (!raw) continue;
+    const v = parseNum(raw);
+    if (!(v > 0)) return err("Precio target no valido en " + a.it[0] + ".");
+    if (!(a.pl > 0)) return err(a.it[0] + " no tiene precio de lista para esta categoria.");
+    if (v > a.pl + 0.005) return err("El target de " + a.it[0] + " es mayor al precio de lista.");
+    lineas.push({ cod: a.it[0], desc: a.it[1], lista: rd(a.pl), dmax: a.it[3], pmax: rd(a.pl * (1 - a.it[3])), target: rd(v), cant: a.cant, dt: 1 - rd(v) / a.pl, activo: !!a.it[7] });
+  }
+  if (!lineas.length) return err("Escribe al menos un precio target.");
+  const nota = $("#auNota").value.trim(), n = Math.ceil(lineas.length / AUT_POR_IMAGEN), tg = lineas.reduce((s, l) => s + rd(l.target * l.cant), 0), cvs = [];
+  for (let k = 0; k < n; k++) cvs.push(solicitudCanvas(cli, lineas.slice(k * AUT_POR_IMAGEN, (k + 1) * AUT_POR_IMAGEN), nota, k + 1, n, tg, lineas.length));
+  $("#ovAut").classList.remove("on");
+  compartirOfertas(cvs, cli, "SOLICITUD_AUTORIZACION", "Solicitud de autorización de precios");
+};
+$("#pAutorizar").onclick = () => {
+  if (!CALC.sku) return toast("Elige un articulo primero");
+  const c = parseNum($("#pCant").value); abrirAutorizacion([{ it: getItem(CALC.sku), cant: c > 0 ? c : 1, valor: CALC.valor }]);
+};
+$("#lAutorizar").onclick = () => abrirAutorizacion(LINES.map(L => getItem(L.sku) ? { it: getItem(L.sku), cant: L.cant, valor: L.valor } : null).filter(Boolean));
 
 /* ====================== EXPORTAR LISTA A EXCEL (vendedores) ====================== */
 const crcT = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
